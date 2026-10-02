@@ -1,0 +1,51 @@
+# Caddy sebagai reverse proxy + TLS internal (tanpa perlu domain publik).
+# Sertifikat ditandatangani CA lokal milik Caddy; pakai `curl -k` atau impor
+# data/caddy/pki/authorities/local/root.crt untuk mempercayainya.
+{
+	# untuk lab: jangan paksa redirect http->https pada permintaan health check
+	auto_https disable_redirects
+	# izinkan sertifikat internal dengan SAN alamat IP juga
+	local_certs
+	default_sni localhost
+}
+
+# CATATAN: `tls internal` menerbitkan sertifikat untuk hostname, bukan IP.
+# Karena itu akses lewat https://localhost:8443 (localhost sudah menunjuk 127.0.0.1),
+# bukan https://127.0.0.1:8443 — Caddy akan menolak SNI berupa IP.
+localhost, lab.localhost {
+	tls internal
+
+	encode gzip zstd
+
+	# header keamanan dasar
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+
+	# health check ringan (tidak diteruskan ke app, jadi tetap jalan walau app sibuk)
+	respond /lb-health 200
+
+	reverse_proxy app:8000
+
+	log {
+		output stdout
+		format console
+	}
+}
+
+# blok khusus port 80:
+#  - /lb-health melayani 200 langsung (health check load balancer tidak boleh kena redirect)
+#  - sisanya dialihkan ke HTTPS
+# Catatan: port 8443 di bawah harus sama dengan HTTPS_PORT di .env.
+http:// {
+	handle /lb-health {
+		respond 200
+	}
+	handle {
+		redir https://localhost:8443{uri} permanent
+	}
+}

@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  # 1) pemeriksaan statis — cepat, selalu jalan
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Buat .env dari template
+        run: cp .env.example .env
+
+      - name: Validasi compose
+        run: docker compose --env-file .env config --quiet && echo "compose.yaml VALID"
+
+      - name: Cek sintaks shell
+        run: |
+          for f in scripts/*.sh; do
+            bash -n "$f" && echo "  $f OK"
+          done
+
+      - name: ShellCheck (kalau tersedia)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning scripts/*.sh || true
+
+      - name: Validasi JSON dashboard Grafana
+        run: python3 -c "import json;json.load(open('monitoring/grafana/dashboards/homelab.json'));print('dashboard JSON valid')"
+
+  # 2) uji end-to-end — benar-benar menyalakan stack lalu memverifikasinya
+  e2e:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Siapkan .env dengan password acak
+        run: |
+          PW=$(python3 -c "import secrets;print(secrets.token_urlsafe(18))")
+          GP=$(python3 -c "import secrets;print(secrets.token_urlsafe(18))")
+          sed -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$PW|" \
+              -e "s|^GRAFANA_PASSWORD=.*|GRAFANA_PASSWORD=$GP|" \
+              .env.example > .env
+
+      - name: Info docker
+        run: docker version && docker compose version
+
+      - name: Nyalakan stack
+        run: docker compose --env-file .env up -d --build
+
+      - name: Tunggu sampai sehat
+        run: |
+          for i in $(seq 1 40); do
+            s=$(docker compose --env-file .env ps --format '{{.Service}} {{.Status}}')
+            echo "$s" | grep -q 'app.*healthy' && echo "$s" | grep -q 'db.*healthy' && break
+            sleep 5
+          done
+          docker compose --env-file .env ps
+
+      - name: Verifikasi end-to-end (20 pemeriksaan)
+        run: bash scripts/verify.sh
+
+      - name: Uji backup & restore
+        run: |
+          set -e
+          before=$(docker compose --env-file .env exec -T db psql -U homelab -d homelab -tAc 'select count(*) from hosts')
+          bash scripts/backup.sh
+          docker compose --env-file .env exec -T db psql -U homelab -d homelab -c "delete from hosts where hostname='prn-lantai2'"
+          after=$(docker compose --env-file .env exec -T db psql -U homelab -d homelab -tAc 'select count(*) from hosts')
+          test "$after" -lt "$before" || { echo "setup uji gagal"; exit 1; }
+          bash scripts/restore.sh "$(ls -1t backups/*.sql.gz | head -1)"
+          restored=$(docker compose --env-file .env exec -T db psql -U homelab -d homelab -tAc 'select count(*) from hosts')
+          test "$restored" -eq "$before" || { echo "restore gagal: $restored != $before"; exit 1; }
+          echo "backup+restore OK: $before -> $after -> $restored"
+
+      - name: Log kalau gagal
+        if: failure()
+        run: docker compose --env-file .env logs --tail=120
+
+      - name: Bersihkan
+        if: always()
+        run: docker compose --env-file .env down -v

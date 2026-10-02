@@ -1,0 +1,126 @@
+name: homelab
+
+# Infrastruktur lab: reverse proxy + TLS internal, app, PostgreSQL,
+# monitoring (Prometheus + Grafana + node-exporter).
+#
+# Semua port default hanya terikat ke 127.0.0.1 — ubah BIND_ADDR di .env
+# kalau memang mau diakses dari mesin lain.
+
+services:
+  # ---------------------------------------------------------------- proxy (TLS)
+  proxy:
+    image: caddy:2.8-alpine
+    container_name: homelab-proxy
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${HTTP_PORT:-8080}:80"
+      - "${BIND_ADDR:-127.0.0.1}:${HTTPS_PORT:-8443}:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [edge, internal]
+
+  # ---------------------------------------------------------------- aplikasi
+  app:
+    build: ./app
+    container_name: homelab-app
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-lab}
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-homelab}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks: [internal]
+
+  # ---------------------------------------------------------------- database
+  db:
+    image: postgres:16-alpine
+    container_name: homelab-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-homelab}
+      POSTGRES_USER: ${POSTGRES_USER:-homelab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD wajib diisi di .env}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-homelab} -d ${POSTGRES_DB:-homelab}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [internal]
+
+  # ---------------------------------------------------------------- monitoring
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: homelab-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom_data:/prometheus
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${PROM_PORT:-9090}:9090"
+    # prometheus ikut `edge` supaya port-nya bisa di-publish: Docker tidak
+    # menerbitkan port untuk container yang hanya berada di jaringan internal.
+    networks: [edge, internal]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: homelab-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?GRAFANA_PASSWORD wajib diisi di .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+    depends_on: [prometheus]
+    networks: [edge, internal]
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: homelab-node-exporter
+    restart: unless-stopped
+    command:
+      - --path.rootfs=/host
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    networks: [internal]
+
+networks:
+  edge: {}
+  internal:
+    internal: true
+
+volumes:
+  caddy_data:
+  caddy_config:
+  db_data:
+  prom_data:
+  grafana_data:

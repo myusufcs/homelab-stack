@@ -1,0 +1,13 @@
+# Kredensial & data runtime — JANGAN di-commit
+.env
+.env.*
+!.env.example
+backups/
+data/
+
+*.log
+*.sql.gz
+
+.DS_Store
+.idea/
+.vscode/
