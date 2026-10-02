@@ -61,22 +61,39 @@ echo "$m" | grep -q 'homelab_uptime_seconds' && ok "metrik /metrics" "format Pro
 echo "$m" | grep -qE 'homelab_db_tcp_open 1' && ok "app→db" "TCP terjangkau" || bad "app→db" "tidak terjangkau"
 
 # --- 4. prometheus -----
+# Catatan: Prometheus butuh satu siklus scrape pertama (interval 15s) sebelum
+# target muncul "up". Jadi bagian ini menunggu (maks ~75 detik) — supaya
+# `make verify` langsung setelah `make up` tidak memberi hasil merah palsu.
 p=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "http://$BIND:$PROM_PORT/-/ready" || echo 000)
 [ "$p" = "200" ] && ok "prometheus /-/ready" "HTTP $p" || bad "prometheus /-/ready" "HTTP $p"
 
-targets=$(curl -s --max-time 8 "http://$BIND:$PROM_PORT/api/v1/targets?state=active" 2>/dev/null \
-  | python3 -c "import sys,json;d=json.load(sys.stdin);t=d['data']['activeTargets'];print(sum(1 for x in t if x['health']=='up'),len(t))" 2>/dev/null || echo "0 0")
-up_targets=$(echo "$targets" | cut -d' ' -f1); all_targets=$(echo "$targets" | cut -d' ' -f2)
-[ "${up_targets:-0}" -ge 3 ] && ok "prometheus targets" "$up_targets/$all_targets up" \
-                            || bad "prometheus targets" "$up_targets/$all_targets up"
+up_targets=0; all_targets=0; waited=0
+while [ "$waited" -lt 75 ]; do
+  read -r up_targets all_targets < <(
+    curl -s --max-time 8 "http://$BIND:$PROM_PORT/api/v1/targets?state=active" 2>/dev/null \
+      | python3 -c "import sys,json;d=json.load(sys.stdin);t=d['data']['activeTargets'];print(sum(1 for x in t if x['health']=='up'),len(t))" 2>/dev/null \
+      || echo "0 0")
+  [ "${up_targets:-0}" -ge 3 ] && break
+  sleep 5; waited=$((waited + 5))
+done
+if [ "${up_targets:-0}" -ge 3 ]; then
+  ok "prometheus targets" "$up_targets/$all_targets up"
+else
+  bad "prometheus targets" "$up_targets/$all_targets up (ditunggu ${waited}s)"
+fi
 
 # --- 5. grafana -----
+# provisioning dashboard bisa butuh beberapa detik setelah container naik
+dash=0; waited=0
+while [ "$waited" -lt 60 ]; do
+  dash=$(curl -s -u "${GRAFANA_USER:-admin}:${GRAFANA_PASSWORD:-admin}" --max-time 8 \
+    "http://$BIND:$GRAFANA_PORT/api/search?query=Homelab" 2>/dev/null \
+    | python3 -c "import sys,json;print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
+  [ "${dash:-0}" -ge 1 ] && break
+  sleep 5; waited=$((waited + 5))
+done
 g=$(curl -s --max-time 8 "http://$BIND:$GRAFANA_PORT/api/health" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('database','?'))" 2>/dev/null || echo "?")
 [ "$g" = "ok" ] && ok "grafana /api/health" "database ok" || bad "grafana /api/health" "database=$g"
-
-dash=$(curl -s -u "${GRAFANA_USER:-admin}:${GRAFANA_PASSWORD:-admin}" --max-time 8 \
-  "http://$BIND:$GRAFANA_PORT/api/search?query=Homelab" 2>/dev/null \
-  | python3 -c "import sys,json;print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
 [ "${dash:-0}" -ge 1 ] && ok "dashboard ter-provision" "$dash ditemukan" || bad "dashboard ter-provision" "tidak ditemukan"
 
 # --- 6. database -----

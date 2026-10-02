@@ -62,6 +62,10 @@ mau diakses dari mesin lain.
 ================================================================
 ```
 
+Skrip verifikasi ini **toleran terhadap stack yang baru naik**: ia menunggu Prometheus
+menyelesaikan scrape pertama dan Grafana selesai provisioning (maks ~75 detik) sebelum
+menyatakan gagal — jadi `make verify` langsung setelah `make up` tidak memberi merah palsu.
+
 ## Mulai pakai
 
 Butuh Docker + Compose v2.
