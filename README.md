@@ -9,7 +9,7 @@ Yang membedakan repo ini: **semuanya sudah diverifikasi benar-benar jalan**, buk
 TLS handshake, header keamanan, metrik Prometheus, sampai skema database — dan CI menjalankan
 stack-nya sungguhan lalu memverifikasi.
 
-[![CI](https://github.com/nullbyte12007/homelab-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/nullbyte12007/homelab-stack/actions/workflows/ci.yml)
+[![CI](https://github.com/myusufcs/homelab-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/myusufcs/homelab-stack/actions/workflows/ci.yml)
 ![Docker](https://img.shields.io/badge/docker-compose-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -71,7 +71,7 @@ menyatakan gagal — jadi `make verify` langsung setelah `make up` tidak memberi
 Butuh Docker + Compose v2.
 
 ```bash
-git clone https://github.com/nullbyte12007/homelab-stack
+git clone https://github.com/myusufcs/homelab-stack
 cd homelab-stack
 
 make up        # buat .env, pull image, build app, jalankan semua
